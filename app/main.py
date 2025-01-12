@@ -7,21 +7,21 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-origins = [
-    "http://localhost:5173",  # React development server
-    "http://localhost:3000",  # React development server
-    "https://employee-clock-frontend.vercel.app/"
+# origins = [
+#     "http://localhost:5173",  # React development server
+#     "http://localhost:3000",  # React development server
+#     "https://employee-clock-frontend.vercel.app/"
     
-]
+# ]
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,  # Allows listed origins
-    allow_credentials=True,  # Allows cookies to be included in requests
-    allow_methods=["*"],  # Allows all HTTP methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allows all headers
-)
+# # Add CORS middleware
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=origins,  # Allows listed origins
+#     allow_credentials=True,  # Allows cookies to be included in requests
+#     allow_methods=["*"],  # Allows all HTTP methods (GET, POST, etc.)
+#     allow_headers=["*"],  # Allows all headers
+# )
 
 # Initialize the database tables on app startup
 @app.on_event("startup")
