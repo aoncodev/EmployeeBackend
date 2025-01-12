@@ -10,6 +10,7 @@ app = FastAPI()
 origins = [
     "http://localhost:5173",  # React development server
     "http://localhost:3000",  # React development server
+    "https://employee-clock-frontend.vercel.app/"
     
 ]
 
