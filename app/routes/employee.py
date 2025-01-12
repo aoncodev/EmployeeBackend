@@ -219,65 +219,71 @@ def get_all_employees_status(date: date = None, db: Session = Depends(get_db)):
                 .first()
             )
 
-            # If no attendance is found, skip this employee
-            if not attendance or not attendance.clock_in or not attendance.clock_out:
-                continue
-
-            # Get all breaks for today's attendance
-            breaks = []
-            total_break_time_seconds = 0  # To accumulate total break time in seconds
+            # If attendance is found, process it; otherwise, set status to "Not clocked in"
             if attendance:
-                breaks = (
-                    db.query(BreakLog)
-                    .filter(BreakLog.attendance_id == attendance.id)
-                    .all()
-                )
+                # Get all breaks for today's attendance
+                breaks = db.query(BreakLog).filter(BreakLog.attendance_id == attendance.id).all()
+
                 # Calculate total break time in seconds
-                for br in breaks:
-                    # Assuming total_break_time is in string format like '0:00:09'
-                    break_time = timedelta(minutes=float(br.total_break_time))
-                    total_break_time_seconds += break_time.total_seconds()
+                total_break_time_seconds = sum(
+                    (timedelta(minutes=float(br.total_break_time)).total_seconds() for br in breaks if br.total_break_time),
+                    0
+                )
 
-            # Convert total break time to float hours
-            total_break_time_hours = total_break_time_seconds / 3600  # Convert to hours
+                # Convert total break time to float hours
+                total_break_time_hours = total_break_time_seconds / 3600  # Convert to hours
 
-            # Convert total_hours to float for consistency, if available
-            total_hours_seconds = float(attendance.total_hours) * 3600 if attendance.total_hours else 0  # Convert to seconds
-            worked_hours_seconds = total_hours_seconds - total_break_time_seconds
-            worked_hours = worked_hours_seconds / 3600  # Convert back to hours
+                # Calculate worked hours excluding breaks
+                total_hours_seconds = float(attendance.total_hours) * 3600 if attendance.total_hours else 0
+                worked_hours_seconds = total_hours_seconds - total_break_time_seconds
+                worked_hours = worked_hours_seconds / 3600  # Convert back to hours
 
-            # Prepare employee's status
-            employee_statuses.append({
-                "employee": {
-                    "id": employee.id,
-                    "name": employee.name,
-                    "role": employee.role,
-                    "wage": employee.hourly_wage
-                },
-                "attendance": {
-                    "id": attendance.id if attendance else None,
-                    "clock_in": attendance.clock_in if attendance else None,
-                    "clock_out": attendance.clock_out if attendance else None,
-                    "total_hours": attendance.total_hours if attendance else None,
-                    "created_at": attendance.created_at if attendance else None
-                },
-                "breaks": [
-                    {
-                        "id": br.id,
-                        "break_type": br.break_type,
-                        "break_start": br.break_start,
-                        "break_end": br.break_end,
-                        "total_break_time": str(timedelta(minutes=float(br.total_break_time)))[:-3] if br.total_break_time else None
-                    } for br in breaks
-                ],
-                "total_hours_excluding_breaks": round(worked_hours, 2),  # Add worked hours excluding breaks
-                "total_break_time": round(total_break_time_hours, 2)  # Add total break time as float hours
-                
-            })
+                # Add employee's status
+                employee_statuses.append({
+                    "employee": {
+                        "id": employee.id,
+                        "name": employee.name,
+                        "role": employee.role,
+                        "wage": employee.hourly_wage
+                    },
+                    "attendance": {
+                        "id": attendance.id,
+                        "clock_in": attendance.clock_in,
+                        "clock_out": attendance.clock_out,
+                        "total_hours": attendance.total_hours,
+                        "created_at": attendance.created_at
+                    },
+                    "breaks": [
+                        {
+                            "id": br.id,
+                            "break_type": br.break_type,
+                            "break_start": br.break_start,
+                            "break_end": br.break_end,
+                            "total_break_time": str(timedelta(minutes=float(br.total_break_time)))[:-3] if br.total_break_time else None
+                        } for br in breaks
+                    ],
+                    "total_hours_excluding_breaks": round(worked_hours, 2),  # Add worked hours excluding breaks
+                    "total_break_time": round(total_break_time_hours, 2)  # Add total break time as float hours
+                })
+            else:
+                # If no attendance record, mark employee as not clocked in
+                employee_statuses.append({
+                    "employee": {
+                        "id": employee.id,
+                        "name": employee.name,
+                        "role": employee.role,
+                        "wage": employee.hourly_wage
+                    },
+                    "attendance": None,  # No attendance for this date
+                    "breaks": [],
+                    "total_hours_excluding_breaks": 0.0,  # No work hours
+                    "total_break_time": 0.0  # No break time
+                })
 
         return {"employees": employee_statuses}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 
 
