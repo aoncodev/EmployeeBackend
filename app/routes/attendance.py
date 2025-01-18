@@ -13,6 +13,7 @@ import logging
 import pytz  # For timezone conversion
 from sqlalchemy import extract
 import math
+from math import ceil
 
 
 logger = logging.getLogger('uvicorn.error')
@@ -31,11 +32,15 @@ def get_employee_attendance(db: Session = Depends(get_db)):
 
 @router.get("/get/attendance/{attendance_id}")
 def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
+    """
+    Fetch attendance record by ID and calculate related details.
+    Assumes all datetime values in the database are in KST.
+    """
     # Fetch the attendance record by ID
     attendance = db.query(AttendanceLog).options(
         joinedload(AttendanceLog.break_logs)  # Eager load associated break_logs
     ).filter(AttendanceLog.id == attendance_id).first()
-    
+
     if not attendance:
         raise HTTPException(status_code=404, detail="Attendance record not found")
 
@@ -45,12 +50,13 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
     total_hours_excluding_breaks = 0
     total_wage = 0
 
-    # Calculate total work hours and total break time if clock_in and clock_out are available
+    # Calculate totals if clock_in is available
     if attendance.clock_in:
         clock_in = attendance.clock_in
-        clock_out = attendance.clock_out or datetime.utcnow()  # Use current time if clock_out is missing
+        clock_out = attendance.clock_out or datetime.now()  # Use current time if clock_out is missing
 
-        total_work_hours = (clock_out - clock_in).total_seconds() / 3600  # Total work time in hours
+        # Calculate total work hours
+        total_work_hours = (clock_out - clock_in).total_seconds() / 3600  # Convert seconds to hours
 
         # Calculate total break time
         total_break_time = sum(
@@ -58,7 +64,8 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
                 (br.break_end - br.break_start).total_seconds() / 3600
                 for br in attendance.break_logs
                 if br.break_start and br.break_end
-            )
+            ),
+            0
         )
 
         # Calculate total hours excluding breaks
@@ -78,22 +85,20 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
         "clock_in": attendance.clock_in,
         "clock_out": attendance.clock_out,
         "has_clocked_out": attendance.clock_out is not None,
-        "total_hours": total_work_hours,
-        "total_hours_excluding_breaks": total_hours_excluding_breaks,
-        "total_wage": total_wage,
-        "total_break_time": total_break_time,  # Sum of all break durations in hours
-        "total_breaks": total_breaks,          # Count of completed breaks
+        "total_hours": round(total_work_hours, 2),
+        "total_hours_excluding_breaks": round(total_hours_excluding_breaks, 2),
+        "total_wage": round(total_wage, 2),
+        "total_break_time": round(total_break_time, 2),  # Total break time in hours
+        "total_breaks": total_breaks,  # Count of completed breaks
         "break_logs": [
             {
                 "id": br.id,
                 "break_type": br.break_type,
                 "break_start": br.break_start,
                 "break_end": br.break_end,
-                "total_break_time": (
-                    (br.break_end - br.break_start).total_seconds() / 3600
-                    if br.break_start and br.break_end
-                    else None
-                ),
+                "total_break_time": round(
+                    (br.break_end - br.break_start).total_seconds() / 3600, 2
+                ) if br.break_start and br.break_end else None,
             }
             for br in attendance.break_logs
         ],
@@ -110,12 +115,16 @@ def get_employee_by_id(
     per_page: int = 10,  # Default to 10 records per page
     db: Session = Depends(get_db),
 ):
+    """
+    Get attendance records for an employee, filtered by month if specified.
+    Assumes all timestamps are stored in KST.
+    """
     # Fetch the employee record
     employee = db.query(Employee).filter(Employee.id == employee_id).first()
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
-    
-    # Query attendance logs, include related break logs
+
+    # Query attendance logs, including related break logs
     query = db.query(AttendanceLog).options(
         joinedload(AttendanceLog.break_logs)
     ).filter(
@@ -142,7 +151,7 @@ def get_employee_by_id(
     # Apply pagination
     query = query.offset((page - 1) * per_page).limit(per_page)
 
-    # Fetch records
+    # Fetch attendance records
     db_attendance = query.all()
 
     if not db_attendance:
@@ -150,19 +159,23 @@ def get_employee_by_id(
             status_code=404, detail=f"Attendance for employee {employee.name} not found"
         )
 
-    # Calculate totals and construct the response
+    # Prepare response
     attendance_records = []
     for attendance in db_attendance:
         # Initialize totals
         total_work_hours = 0
         total_break_hours = 0
         total_hours_excluding_breaks = 0
-        hourly_wage = float(employee.hourly_wage) if employee.hourly_wage else 0
         total_wage = 0
+        hourly_wage = float(employee.hourly_wage) if employee.hourly_wage else 0
 
-        if attendance.clock_in and attendance.clock_out:
+        # Calculate total work hours and break hours if clock_in is available
+        if attendance.clock_in:
+            clock_in = attendance.clock_in
+            clock_out = attendance.clock_out or datetime.now()  # Use current time if clock_out is missing
+
             # Calculate total work hours
-            total_work_hours = (attendance.clock_out - attendance.clock_in).total_seconds() / 3600
+            total_work_hours = (clock_out - clock_in).total_seconds() / 3600
 
             # Calculate total break hours
             total_break_hours = sum(
@@ -180,33 +193,32 @@ def get_employee_by_id(
             # Calculate total wage
             total_wage = total_hours_excluding_breaks * hourly_wage
 
+        # Append the attendance record to the result
         attendance_records.append({
             "id": attendance.id,
             "employee_name": employee.name,
             "clock_in": attendance.clock_in,
             "clock_out": attendance.clock_out,
-            "has_clocked_out": attendance.clock_out is not None,  # Indicate if the employee has clocked out
-            "total_hours": total_work_hours,
-            "total_hours_excluding_breaks": total_hours_excluding_breaks,
-            "total_break_hours": total_break_hours,
-            "total_wage": total_wage,
+            "has_clocked_out": attendance.clock_out is not None,
+            "total_hours": round(total_work_hours, 2),
+            "total_hours_excluding_breaks": round(total_hours_excluding_breaks, 2),
+            "total_break_hours": round(total_break_hours, 2),
+            "total_wage": round(total_wage, 2),
             "break_logs": [
                 {
                     "id": br.id,
                     "break_type": br.break_type,
                     "break_start": br.break_start,
                     "break_end": br.break_end,
-                    "total_break_time": (
-                        (br.break_end - br.break_start).total_seconds() / 3600
-                        if br.break_start and br.break_end
-                        else None
-                    ),
+                    "total_break_time": round(
+                        (br.break_end - br.break_start).total_seconds() / 3600, 2
+                    ) if br.break_start and br.break_end else None,
                 }
                 for br in attendance.break_logs
             ],
         })
 
-    total_pages = math.ceil(total_records / per_page)
+    total_pages = ceil(total_records / per_page)
 
     return {
         "attendance_records": attendance_records,
@@ -333,6 +345,10 @@ def clock_out(employee_id: int, db: Session = Depends(get_db)):
 
 @router.put("/attendance/edit/clock_in")
 def update_clock_in(request: ClockInRequest, db: Session = Depends(get_db)):
+    """
+    Updates the clock-in time for an attendance record. 
+    Assumes all timestamps are in KST.
+    """
     try:
         # Fetch the attendance record by ID
         attendance = db.query(AttendanceLog).filter(AttendanceLog.id == request.attendance_id).first()
@@ -342,42 +358,45 @@ def update_clock_in(request: ClockInRequest, db: Session = Depends(get_db)):
 
         # If clock_in is provided in the request, convert the string to a datetime object
         if request.clock_in:
-            kst_time = datetime.fromisoformat(request.clock_in)
+            try:
+                # Parse clock_in as KST datetime
+                kst_time = datetime.fromisoformat(request.clock_in)  # Input should already be KST formatted
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid datetime format for clock_in")
 
-            # Ensure the datetime is naive before localizing
-            if kst_time.tzinfo is None:
-                kst_timezone = pytz.timezone("Asia/Seoul")
-                kst_time = kst_timezone.localize(kst_time)
-            else:
-                # If tzinfo is already set, ensure it's KST
-                kst_timezone = pytz.timezone("Asia/Seoul")
-                kst_time = kst_time.astimezone(kst_timezone)
+            # Update the clock_in field in the database
+            attendance.clock_in = kst_time
 
-            # Convert KST time to UTC
-            utc_time = kst_time.astimezone(pytz.utc)
-
-            attendance.clock_in = utc_time
-
-            # Calculate and update the total hours after clock_in is set
+            # Recalculate and update total hours if clock_out is set
             attendance.update_total_hours(db)
 
         db.commit()
         db.refresh(attendance)
 
-        return {"message": "Clock-in time updated successfully", "data": {
-            "id": attendance.id,
-            "employee_id": attendance.employee_id,
-            "clock_in": attendance.clock_in,
-            "total_hours": attendance.total_hours
-        }}
+        return {
+            "message": "Clock-in time updated successfully",
+            "data": {
+                "id": attendance.id,
+                "employee_id": attendance.employee_id,
+                "clock_in": attendance.clock_in,
+                "total_hours": attendance.total_hours,
+            },
+        }
 
+    except HTTPException as e:
+        raise e  # Re-raise known HTTP exceptions
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
+
 @router.put("/attendance/edit/clock_out")
 def update_clock_out(request: ClockOutRequest, db: Session = Depends(get_db)):
+    """
+    Updates the clock-out time for an attendance record.
+    Assumes all timestamps are in KST.
+    """
     try:
         # Fetch the attendance record by ID
         attendance = db.query(AttendanceLog).filter(AttendanceLog.id == request.attendance_id).first()
@@ -387,34 +406,37 @@ def update_clock_out(request: ClockOutRequest, db: Session = Depends(get_db)):
 
         # If clock_out is provided in the request, convert the string to a datetime object
         if request.clock_out:
-            # Convert the clock_out string (KST) to a datetime object
-            kst_time = datetime.fromisoformat(request.clock_out)
+            try:
+                # Parse clock_out as KST datetime
+                kst_time = datetime.fromisoformat(request.clock_out)  # Input should already be KST formatted
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid datetime format for clock_out")
 
-            # Assuming the clock_out time is in KST (Korean Standard Time, UTC+9)
-            kst_timezone = pytz.timezone("Asia/Seoul")
-            kst_time = kst_timezone.localize(kst_time)
+            # Update the clock_out field in the database
+            attendance.clock_out = kst_time
 
-            # Convert KST time to UTC time
-            utc_time = kst_time.astimezone(pytz.utc)
-
-            attendance.clock_out = utc_time
-
-            # Calculate and update the total hours after clock_out is set
+            # Recalculate and update total hours after clock_out is set
             attendance.update_total_hours(db)
 
         db.commit()
         db.refresh(attendance)
 
-        return {"message": "Clock-out time updated successfully", "data": {
-            "id": attendance.id,
-            "employee_id": attendance.employee_id,
-            "clock_out": attendance.clock_out,
-            "total_hours": attendance.total_hours
-        }}
+        return {
+            "message": "Clock-out time updated successfully",
+            "data": {
+                "id": attendance.id,
+                "employee_id": attendance.employee_id,
+                "clock_out": attendance.clock_out,
+                "total_hours": attendance.total_hours,
+            },
+        }
 
+    except HTTPException as e:
+        raise e  # Re-raise known HTTP exceptions
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
     
 
 @router.delete("/attendance/delete/{attendance_id}/clock_out")

@@ -288,6 +288,7 @@ def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
 
 from datetime import timedelta
 
+
 @router.get("/employees/status/")
 def get_all_employees_status(date: date = None, db: Session = Depends(get_db)):
     """

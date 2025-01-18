@@ -111,19 +111,19 @@ def update_break_start(
     db: Session = Depends(get_db)
 ):
     try:
-        # Extract data from request body
+        # Extract data from the request body
         attendance_id = body.get("attendance_id")
         break_id = body.get("break_id")
-        break_start_kst = body.get("break_start")  # Expected as a Korean time string (ISO format)
+        break_start_kst = body.get("break_start")  # Expected as an ISO 8601 datetime string in KST
 
         if not all([attendance_id, break_id, break_start_kst]):
             raise HTTPException(status_code=400, detail="Invalid or missing input data")
 
-        # Convert KST time string to UTC
-        kst_timezone = pytz.timezone("Asia/Seoul")
-        utc_timezone = pytz.utc
-        break_start_kst_dt = datetime.fromisoformat(break_start_kst)
-        break_start_utc_dt = kst_timezone.localize(break_start_kst_dt).astimezone(utc_timezone)
+        # Parse break_start directly as KST datetime
+        try:
+            break_start_kst_dt = datetime.fromisoformat(break_start_kst)  # Input is assumed to be in KST
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid datetime format for break_start")
 
         # Fetch the break log
         break_log = db.query(BreakLog).filter(
@@ -134,8 +134,8 @@ def update_break_start(
         if not break_log:
             raise HTTPException(status_code=404, detail="Break log not found")
 
-        # Update the break_start with the converted UTC time
-        break_log.break_start = break_start_utc_dt
+        # Update the break_start
+        break_log.break_start = break_start_kst_dt
 
         # Fetch the associated attendance log
         attendance = db.query(AttendanceLog).filter(
@@ -145,8 +145,8 @@ def update_break_start(
         if not attendance:
             raise HTTPException(status_code=404, detail="Attendance record not found")
 
-        # Calculate the updated total worked hours
-        attendance.total_hours = attendance.calculate_total_hours()
+        # Update the total hours if needed
+        attendance.update_total_hours(db)
 
         # Commit changes to the database
         db.commit()
@@ -160,9 +160,81 @@ def update_break_start(
             "total_hours": attendance.total_hours,
         }
 
+    except HTTPException as e:
+        raise e  # Re-raise HTTP exceptions for clear error reporting
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+
+@router.put("/edit/break/end")
+def update_break_end(
+    body: dict,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Extract data from the request body
+        attendance_id = body.get("attendance_id")
+        break_id = body.get("break_id")
+        break_end_kst = body.get("break_end")  # Expected as an ISO 8601 datetime string in KST
+
+        if not all([attendance_id, break_id, break_end_kst]):
+            raise HTTPException(status_code=400, detail="Invalid or missing input data")
+
+        # Parse break_end directly as KST datetime
+        try:
+            break_end_kst_dt = datetime.fromisoformat(break_end_kst)  # Input is assumed to be in KST
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid datetime format for break_end")
+
+        # Fetch the break log
+        break_log = db.query(BreakLog).filter(
+            BreakLog.id == break_id,
+            BreakLog.attendance_id == attendance_id
+        ).first()
+
+        if not break_log:
+            raise HTTPException(status_code=404, detail="Break log not found")
+
+        # Update the break_end
+        break_log.break_end = break_end_kst_dt
+
+        # Calculate total break time if both start and end are set
+        if break_log.break_start and break_log.break_end:
+            time_diff = break_log.break_end - break_log.break_start
+            break_log.total_break_time = round(time_diff.total_seconds() / 3600, 2)  # Total hours
+
+        # Fetch the associated attendance log
+        attendance = db.query(AttendanceLog).filter(
+            AttendanceLog.id == attendance_id
+        ).first()
+
+        if not attendance:
+            raise HTTPException(status_code=404, detail="Attendance record not found")
+
+        # Update the total hours in the attendance record
+        attendance.update_total_hours(db)
+
+        # Commit changes to the database
+        db.commit()
+
+        return {
+            "message": "Break end time updated successfully",
+            "break_log": {
+                "id": break_log.id,
+                "break_start": break_log.break_start.isoformat() if break_log.break_start else None,
+                "break_end": break_log.break_end.isoformat(),
+                "total_break_time": break_log.total_break_time,
+            },
+            "total_hours": attendance.total_hours,
+        }
+
+    except HTTPException as e:
+        raise e  # Re-raise HTTP exceptions for clear error reporting
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 
 
 @router.post("/create/break")
@@ -181,31 +253,29 @@ def create_new_break(
                 status_code=404, detail="Attendance record not found"
             )
 
-        # Define Korean timezone and UTC timezone
-        kst_timezone = pytz.timezone("Asia/Seoul")
-        utc_timezone = pytz.utc
+        # Parse `break_start` and `break_end` as KST datetime objects
+        try:
+            break_start_kst = datetime.fromisoformat(break_data.break_start)
+            break_end_kst = datetime.fromisoformat(break_data.break_end)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid datetime format")
 
-        # Convert break_start and break_end from Korean time to UTC
-        break_start_kst = datetime.fromisoformat(break_data.break_start)
-        break_end_kst = datetime.fromisoformat(break_data.break_end)
-
-        break_start_utc = kst_timezone.localize(break_start_kst).astimezone(utc_timezone)
-        break_end_utc = kst_timezone.localize(break_end_kst).astimezone(utc_timezone)
-
-        # Calculate the total break time in hours
-        total_break_time = (break_end_utc - break_start_utc).total_seconds() / 3600
-
-        if total_break_time < 0:
+        # Validate `break_end` is after `break_start`
+        if break_end_kst <= break_start_kst:
             raise HTTPException(
                 status_code=400, detail="Break end time must be after break start time"
             )
+
+        # Calculate total break time in hours
+        total_break_time = (break_end_kst - break_start_kst).total_seconds() / 3600
 
         # Create a new BreakLog instance
         new_break = BreakLog(
             attendance_id=break_data.attendance_id,
             break_type=break_data.break_type,
-            break_start=break_start_utc,
-            break_end=break_end_utc,
+            break_start=break_start_kst,
+            break_end=break_end_kst,
+            total_break_time=round(total_break_time, 2),
         )
 
         # Add the new break to the session
@@ -231,9 +301,12 @@ def create_new_break(
             "total_hours": round(attendance.total_hours, 2),
         }
 
+    except HTTPException as e:
+        raise e  # Preserve HTTP exceptions for proper error responses
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
     
 
 @router.delete("/delete/break/{break_id}")
