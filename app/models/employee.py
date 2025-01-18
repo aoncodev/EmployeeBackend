@@ -1,5 +1,6 @@
 from sqlalchemy import Column, Integer, String, Numeric, TIMESTAMP, Enum
 from sqlalchemy.orm import relationship
+from app.models.attendance import AttendanceLog  # Ensure AttendanceLog is imported
 from datetime import datetime
 from app.database import Base
 from enum import Enum as PyEnum

@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 
 class BreakClockIn(BaseModel):
@@ -42,3 +42,16 @@ class BreakLogResponse(BreakLogBase):
 
     class Config:
         from_attributes = True  # Enable ORM integration
+
+class UpdateBreaksRequest(BaseModel):
+    break_logs: List[BreakLogBase]
+
+
+class CreateNewBreak(BaseModel):
+    attendance_id: int
+    break_type: str
+    break_start: str
+    break_end: str
+
+    class Config:
+        from_attributes = True

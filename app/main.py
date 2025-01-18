@@ -6,6 +6,10 @@ from app.routes.breaks import router as breaks_router
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
+
+
+
+
 app = FastAPI()
 
 # Set up logging to see if CORS headers are applied

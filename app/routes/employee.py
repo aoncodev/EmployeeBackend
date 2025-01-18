@@ -1,21 +1,118 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
 from app.models.attendance import AttendanceLog
 from app.models.employee import Employee
-from app.schemas.employee import EmployeeResponse, EmployeeCreate, EmployeeUpdate, EmployeeLogin
+from app.schemas.employee import EmployeeResponse, EmployeeCreate, EmployeeUpdate, EmployeeLogin, RoleEnum
 import secrets
 import string
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta, date
 from app.models.breaks import BreakLog
+
+import jwt
+
+
 router = APIRouter()
 
 # Function to generate a random qr_id (e.g., a 20-character alphanumeric string)
 def generate_qr_id(length=20):
     characters = string.ascii_letters + string.digits
     return ''.join(secrets.choice(characters) for _ in range(length))
+
+
+# JWT Configuration
+SECRET_KEY = "yourdfsdfdsfdsf_fdsfsdfdssecret_fsdfdsfdfdfwefewsfskey"
+ALGORITHM = "HS256"
+
+def create_token(employee_id: int, role: str):
+    """
+    Create a JWT token with a 1-day expiration.
+    """
+    payload = {
+        "sub": str(employee_id),  # Convert employee_id to a string
+        "role": role,
+        "exp": datetime.utcnow() + timedelta(minutes=30),
+    }
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return token
+
+
+@router.get("/validate-token")
+def validate_token(Authorization: str = Header(...), db: Session = Depends(get_db)):
+    """
+    Validates a JWT token and retrieves user details if the token is valid.
+    """
+    try:
+        # Extract token from the Authorization header
+        if not Authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Invalid authorization format.")
+        token = Authorization.split(" ")[1]
+        print(token)
+
+        # Decode the JWT
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        print(payload)
+        user_id: int = payload.get("sub")
+        print(user_id)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload.")
+
+        # Fetch the user from the database
+        user = db.query(Employee).filter(Employee.id == user_id).first()
+        print(user)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        # Return user details if valid
+        return {
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "role": user.role.value,  # Ensure role is serialized correctly
+            }
+        }
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired.")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+@router.post("/admin/login")
+def admin_login(qr: EmployeeLogin, db: Session = Depends(get_db)):
+    try:
+        # Decode the QR data to find the employee
+        employee = db.query(Employee).filter(Employee.qr_id == qr.qr_id).first()
+
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found.")
+
+        # Check if the employee is an admin
+        if str(employee.role) != str(RoleEnum.admin):  # Compare enums directly
+            print(RoleEnum.admin)
+            print(employee.role)
+            raise HTTPException(
+                status_code=403, detail="Authentication failed. Admin access required."
+            )
+
+        # Generate JWT token
+        token = create_token(employee.id, employee.role.value)  # Convert role to string for the token
+
+        # Return the response with the token
+        response = {
+            "id": employee.id,
+            "name": employee.name,
+            "role": employee.role.value,  # Convert enum to string for JSON response
+            "token": token,
+        }
+
+        return response
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
 
