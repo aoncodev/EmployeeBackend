@@ -10,8 +10,9 @@ import string
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta, date
 from app.models.breaks import BreakLog
-
+from datetime import timedelta
 import jwt
+from sqlalchemy import or_
 
 
 router = APIRouter()
@@ -219,11 +220,10 @@ def login(qr: EmployeeLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
     
 
-
 @router.get("/employee/status/{employee_id}")
 def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
     """
-    Get today's attendance and break status for an employee.
+    Get today's attendance and break status for an employee, including ongoing sessions from previous days.
     """
     try:
         # Check if the employee exists
@@ -231,15 +231,20 @@ def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found.")
 
-        # Get today's date
-        today_date = datetime.today().date()
+        # Get today's start (midnight) as a datetime object
+        today_start = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
 
-        # Fetch today's attendance for the employee
+        # Fetch the most relevant attendance record
         attendance = db.query(AttendanceLog).filter(
             AttendanceLog.employee_id == employee_id,
-            AttendanceLog.clock_in >= today_date
-        ).first()
+            or_(
+                AttendanceLog.clock_in >= today_start,  # Started today
+                AttendanceLog.clock_out >= today_start,  # Ended today
+                AttendanceLog.clock_out == None          # Ongoing attendance
+            )
+        ).order_by(AttendanceLog.clock_in.desc()).first()
 
+        # Rest of the code remains the same...
         if not attendance:
             return {
                 "employee": {
@@ -251,12 +256,11 @@ def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
                 "breaks": []
             }
 
-        # Fetch all breaks associated with today's attendance
+        # Fetch breaks and prepare response (unchanged)
         breaks = db.query(BreakLog).filter(
             BreakLog.attendance_id == attendance.id
         ).all()
 
-        # Prepare the response
         response = {
             "employee": {
                 "id": employee.id,
@@ -286,7 +290,7 @@ def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
-from datetime import timedelta
+
 
 
 @router.get("/employees/status/")
