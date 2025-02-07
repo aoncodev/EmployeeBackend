@@ -292,8 +292,8 @@ def clock_out(employee_id: int, db: Session = Depends(get_db)):
         start_of_today = datetime.combine(today, datetime.min.time())
         start_of_tomorrow = datetime.combine(today + timedelta(days=1), datetime.min.time())
 
-        # Find an open attendance record (clock_out is None)
-        # that started before tomorrow, so that it catches records that started yesterday as well.
+        # Find an open attendance record (clock_out is None) that started before tomorrow.
+        # Order by clock_in in descending order to get the latest record.
         attendance_record = (
             db.query(AttendanceLog)
             .filter(
@@ -301,6 +301,7 @@ def clock_out(employee_id: int, db: Session = Depends(get_db)):
                 AttendanceLog.clock_in < start_of_tomorrow,  # clock in happened before tomorrow
                 AttendanceLog.clock_out == None              # still ongoing
             )
+            .order_by(AttendanceLog.clock_in.desc())         # get the latest open record
             .first()
         )
 
