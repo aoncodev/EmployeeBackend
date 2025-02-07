@@ -10,7 +10,7 @@ import string
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta, date
 from app.models.breaks import BreakLog
-
+from sqlalchemy import or_
 import jwt
 
 
@@ -220,6 +220,7 @@ def login(qr: EmployeeLogin, db: Session = Depends(get_db)):
     
 
 
+
 @router.get("/employee/status/{employee_id}")
 def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
     """
@@ -231,13 +232,20 @@ def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found.")
 
-        # Get today's date
-        today_date = datetime.today().date()
+        # Define the boundaries for today
+        today_date = date.today()
+        start_of_today = datetime.combine(today_date, datetime.min.time())
+        start_of_tomorrow = datetime.combine(today_date + timedelta(days=1), datetime.min.time())
 
-        # Fetch today's attendance for the employee
+        # Fetch attendance record that overlaps with today.
+        # This will include attendance that started before today but is still ongoing or ended today.
         attendance = db.query(AttendanceLog).filter(
             AttendanceLog.employee_id == employee_id,
-            AttendanceLog.clock_in >= today_date
+            AttendanceLog.clock_in < start_of_tomorrow,  # Clock in happened before tomorrow
+            or_(
+                AttendanceLog.clock_out == None,           # Ongoing attendance, or
+                AttendanceLog.clock_out >= start_of_today    # Clock out happened today or later
+            )
         ).first()
 
         if not attendance:
@@ -251,7 +259,7 @@ def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
                 "breaks": []
             }
 
-        # Fetch all breaks associated with today's attendance
+        # Fetch all breaks associated with the attendance record
         breaks = db.query(BreakLog).filter(
             BreakLog.attendance_id == attendance.id
         ).all()
@@ -285,6 +293,7 @@ def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 
 
 
