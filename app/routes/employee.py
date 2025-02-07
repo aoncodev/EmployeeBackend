@@ -8,7 +8,7 @@ from app.schemas.employee import EmployeeResponse, EmployeeCreate, EmployeeUpdat
 import secrets
 import string
 from sqlalchemy.exc import IntegrityError
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time
 from app.models.breaks import BreakLog
 from sqlalchemy import or_
 import jwt
