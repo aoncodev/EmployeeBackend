@@ -14,6 +14,7 @@ import pytz  # For timezone conversion
 from sqlalchemy import extract
 import math
 from math import ceil
+from datetime import datetime, date, timedelta
 
 
 logger = logging.getLogger('uvicorn.error')
@@ -273,6 +274,8 @@ def clock_in(employee_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 
+
+
 @router.post("/clock-out/")
 def clock_out(employee_id: int, db: Session = Depends(get_db)):
     """
@@ -284,17 +287,19 @@ def clock_out(employee_id: int, db: Session = Depends(get_db)):
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
 
-        # Check if the employee has a valid clock-in record for today
-        today_start = datetime.combine(date.today(), datetime.min.time())
-        today_end = datetime.combine(date.today(), datetime.max.time())
+        # Define the boundaries for today
+        today = date.today()
+        start_of_today = datetime.combine(today, datetime.min.time())
+        start_of_tomorrow = datetime.combine(today + timedelta(days=1), datetime.min.time())
 
+        # Find an open attendance record (clock_out is None)
+        # that started before tomorrow, so that it catches records that started yesterday as well.
         attendance_record = (
             db.query(AttendanceLog)
             .filter(
                 AttendanceLog.employee_id == employee_id,
-                AttendanceLog.clock_in >= today_start,
-                AttendanceLog.clock_in <= today_end,
-                AttendanceLog.clock_out == None  # Ensure clock_out has not already occurred
+                AttendanceLog.clock_in < start_of_tomorrow,  # clock in happened before tomorrow
+                AttendanceLog.clock_out == None              # still ongoing
             )
             .first()
         )
@@ -312,7 +317,7 @@ def clock_out(employee_id: int, db: Session = Depends(get_db)):
                 BreakLog.attendance_id == attendance_record.id,
                 BreakLog.break_end == None  # Break is still ongoing
             )
-            .order_by(BreakLog.break_start.desc())  # Ensure we get the last break
+            .order_by(BreakLog.break_start.desc())  # Get the most recent break
             .first()
         )
 
@@ -341,6 +346,7 @@ def clock_out(employee_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
     
 
 @router.put("/attendance/edit/clock_in")
