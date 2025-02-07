@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, date, time
 from app.models.breaks import BreakLog
 from sqlalchemy import or_
 import jwt
+from sqlalchemy import desc
+
 
 
 router = APIRouter()
