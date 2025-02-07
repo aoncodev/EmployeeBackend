@@ -224,48 +224,52 @@ def login(qr: EmployeeLogin, db: Session = Depends(get_db)):
 @router.get("/employee/status/{employee_id}")
 def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
     """
-    Get the attendance and break status for an employee.
+    Get the attendance and break status for an employee using the latest attendance record.
     
-    If the request is made before 5 AM, check for yesterday's attendance record 
-    that has no clock-out (allowing an employee to clock out after midnight).
-    Otherwise, check today's attendance record.
+    Logic:
+      - Determine the "effective" date:
+          * If the current time is before 5:00 AM, use yesterday’s date.
+          * Otherwise, use today’s date.
+      - Query the latest attendance record for the employee.
+      - If the record's clock_in falls within the boundaries of the effective day (or, when before 5 AM,
+        allow an open attendance record from a previous day), then use that record.
+      - If no valid record is found, return a response with attendance set to None.
     """
     try:
-        # Verify employee exists.
+        # Ensure the employee exists.
         employee = db.query(Employee).filter(Employee.id == employee_id).first()
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found.")
 
         now = datetime.now()
-        attendance = None
 
-        # Helper function that queries attendance records for a given date boundary.
-        def query_attendance_for_date(effective_date: date):
-            start_of_day = datetime.combine(effective_date, datetime.min.time())
-            start_of_next_day = datetime.combine(effective_date + timedelta(days=1), datetime.min.time())
-            return db.query(AttendanceLog).filter(
-                AttendanceLog.employee_id == employee_id,
-                AttendanceLog.clock_in < start_of_next_day,  # Clock in before the end of the day.
-                or_(
-                    AttendanceLog.clock_out == None,            # Still clocked in, or
-                    AttendanceLog.clock_out >= start_of_day       # Clocked out later than the start of the day.
-                )
-            ).first()
-
-        # If current time is before 5 AM, check yesterday's attendance first.
+        # Determine the effective date based on current time.
+        effective_date = date.today()
         if now.time() < time(5, 0):
-            yesterday = date.today() - timedelta(days=1)
-            attendance = query_attendance_for_date(yesterday)
-            # Only consider yesterday's record if clock_out is empty.
-            if attendance and attendance.clock_out is not None:
-                attendance = None
+            effective_date = date.today() - timedelta(days=1)
 
-        # If no valid record from yesterday (or if it's 5 AM or later), check today's attendance.
-        if not attendance:
-            today = date.today()
-            attendance = query_attendance_for_date(today)
+        # Boundaries for the effective day.
+        start_of_day = datetime.combine(effective_date, datetime.min.time())
+        end_of_day = datetime.combine(effective_date + timedelta(days=1), datetime.min.time())
 
-        # If no attendance record is found, return the default response.
+        # Query the latest attendance record for the employee.
+        latest_attendance = (
+            db.query(AttendanceLog)
+            .filter(AttendanceLog.employee_id == employee_id)
+            .order_by(desc(AttendanceLog.clock_in))
+            .first()
+        )
+
+        attendance = None
+        if latest_attendance:
+            # Check if the attendance's clock_in is within the effective day.
+            if start_of_day <= latest_attendance.clock_in < end_of_day:
+                attendance = latest_attendance
+            # If before 5 AM, allow an open attendance record (clock_out is None) even if it started before
+            # the effective day's start. This lets an employee clock out after midnight.
+            elif now.time() < time(5, 0) and latest_attendance.clock_out is None:
+                attendance = latest_attendance
+
         if not attendance:
             return {
                 "employee": {
@@ -277,10 +281,9 @@ def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
                 "breaks": []
             }
 
-        # If an attendance record was found, fetch all associated break logs.
+        # Query all break logs associated with the attendance record.
         break_logs = db.query(BreakLog).filter(BreakLog.attendance_id == attendance.id).all()
 
-        # Prepare and return the response.
         response = {
             "employee": {
                 "id": employee.id,
@@ -300,7 +303,7 @@ def get_employee_status(employee_id: int, db: Session = Depends(get_db)):
                     "break_type": br.break_type,
                     "break_start": br.break_start,
                     "break_end": br.break_end,
-                    "total_break_time": str(timedelta(minutes=float(br.total_break_time))) 
+                    "total_break_time": str(timedelta(minutes=float(br.total_break_time)))
                                         if br.total_break_time else None
                 } for br in break_logs
             ]
