@@ -168,9 +168,12 @@ def get_employee_by_id(
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    # Query attendance logs, including related break logs
+    # Query attendance logs, including related break logs, late record, penalties, and bonuses
     query = db.query(AttendanceLog).options(
-        joinedload(AttendanceLog.break_logs)
+        joinedload(AttendanceLog.break_logs),
+        joinedload(AttendanceLog.late_record),
+        joinedload(AttendanceLog.penalties),
+        joinedload(AttendanceLog.bonuses)
     ).filter(
         AttendanceLog.employee_id == employee_id
     )
@@ -179,7 +182,7 @@ def get_employee_by_id(
     if month != "all":
         try:
             month_int = int(month)
-            if 1 <= month_int <= 12:  # Ensure valid month range
+            if 1 <= month_int <= 12:
                 query = query.filter(extract("month", AttendanceLog.clock_in) == month_int)
             else:
                 raise ValueError
@@ -205,15 +208,16 @@ def get_employee_by_id(
 
     # Prepare response
     attendance_records = []
+    hourly_wage = float(employee.hourly_wage) if employee.hourly_wage else 0
+
     for attendance in db_attendance:
         # Initialize totals
         total_work_hours = 0
         total_break_hours = 0
         total_hours_excluding_breaks = 0
         total_wage = 0
-        hourly_wage = float(employee.hourly_wage) if employee.hourly_wage else 0
+        net_pay = 0
 
-        # Calculate total work hours and break hours if clock_in is available
         if attendance.clock_in:
             clock_in = attendance.clock_in
             clock_out = attendance.clock_out or datetime.now()  # Use current time if clock_out is missing
@@ -231,13 +235,20 @@ def get_employee_by_id(
                 for br in attendance.break_logs
             )
 
-            # Calculate total hours excluding breaks
+            # Calculate effective working hours (excluding breaks)
             total_hours_excluding_breaks = max(0, total_work_hours - total_break_hours)
 
-            # Calculate total wage
+            # Calculate total wage (base wage)
             total_wage = total_hours_excluding_breaks * hourly_wage
 
-        # Append the attendance record to the result
+            # Calculate net wage adjustments:
+            late_deduction = float(attendance.late_record.deduction_amount) if attendance.late_record else 0
+            total_penalties = sum(float(p.price) for p in attendance.penalties) if attendance.penalties else 0
+            total_bonuses = sum(float(b.price) for b in attendance.bonuses) if attendance.bonuses else 0
+
+            # Compute net wage
+            net_pay = total_wage - (late_deduction + total_penalties) + total_bonuses
+
         attendance_records.append({
             "id": attendance.id,
             "employee_name": employee.name,
@@ -248,6 +259,7 @@ def get_employee_by_id(
             "total_hours_excluding_breaks": round(total_hours_excluding_breaks, 2),
             "total_break_hours": round(total_break_hours, 2),
             "total_wage": round(total_wage, 2),
+            "net_pay": round(net_pay, 2),  # New field for net wage
             "break_logs": [
                 {
                     "id": br.id,
@@ -271,7 +283,6 @@ def get_employee_by_id(
         "records_per_page": per_page,
         "total_records": total_records,
     }
-
 
 
 
