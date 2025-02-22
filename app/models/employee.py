@@ -21,3 +21,5 @@ class Employee(Base):
     created_at = Column(TIMESTAMP, default=datetime.now)
 
     attendance_logs = relationship("AttendanceLog", back_populates="employee", cascade="all, delete-orphan")
+    tasks = relationship("Task", back_populates="employee", cascade="all, delete-orphan")
+

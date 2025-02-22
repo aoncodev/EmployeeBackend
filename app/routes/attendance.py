@@ -37,9 +37,14 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
     Fetch attendance record by ID and calculate related details.
     Assumes all datetime values in the database are in KST.
     """
-    # Fetch the attendance record by ID
+    from sqlalchemy.orm import joinedload
+    # Fetch attendance record by ID and eagerly load necessary relationships.
     attendance = db.query(AttendanceLog).options(
-        joinedload(AttendanceLog.break_logs)  # Eager load associated break_logs
+        joinedload(AttendanceLog.break_logs),
+        joinedload(AttendanceLog.penalties),
+        joinedload(AttendanceLog.bonuses),
+        joinedload(AttendanceLog.late_record),
+        joinedload(AttendanceLog.employee)
     ).filter(AttendanceLog.id == attendance_id).first()
 
     if not attendance:
@@ -59,7 +64,7 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
         # Calculate total work hours
         total_work_hours = (clock_out - clock_in).total_seconds() / 3600  # Convert seconds to hours
 
-        # Calculate total break time
+        # Calculate total break time (summing all completed breaks)
         total_break_time = sum(
             (
                 (br.break_end - br.break_start).total_seconds() / 3600
@@ -69,28 +74,41 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
             0
         )
 
-        # Calculate total hours excluding breaks
+        # Calculate effective working hours (excluding breaks)
         total_hours_excluding_breaks = max(0, total_work_hours - total_break_time)
 
-        # Calculate total wage
+        # Calculate base wage using the employee's hourly wage
         hourly_wage = float(attendance.employee.hourly_wage) if attendance.employee and attendance.employee.hourly_wage else 0
         total_wage = total_hours_excluding_breaks * hourly_wage
+
+    # Calculate adjustments for net pay:
+    late_deduction = float(attendance.late_record.deduction_amount) if attendance.late_record else 0
+    total_penalties = sum(float(p.price) for p in attendance.penalties) if attendance.penalties else 0
+    total_bonuses = sum(float(b.price) for b in attendance.bonuses) if attendance.bonuses else 0
+
+    # Compute net pay: base wage minus deductions and penalties, plus bonuses
+    net_pay = (total_wage - (late_deduction + total_penalties)) + total_bonuses
 
     # Calculate total break count
     total_breaks = len([br for br in attendance.break_logs if br.break_start and br.break_end])
 
-    # Prepare the response
+    # Prepare the response dictionary including detailed penalty and bonus logs
     result = {
         "id": attendance.id,
         "employee_name": attendance.employee.name if attendance.employee else "Unknown",
+        "employee_id": attendance.employee.id,
         "clock_in": attendance.clock_in,
         "clock_out": attendance.clock_out,
         "has_clocked_out": attendance.clock_out is not None,
         "total_hours": round(total_work_hours, 2),
         "total_hours_excluding_breaks": round(total_hours_excluding_breaks, 2),
         "total_wage": round(total_wage, 2),
-        "total_break_time": round(total_break_time, 2),  # Total break time in hours
-        "total_breaks": total_breaks,  # Count of completed breaks
+        "total_break_time": round(total_break_time, 2),
+        "total_breaks": total_breaks,
+        "total_penalties": total_penalties,
+        "total_bonus": total_bonuses,
+        "total_late_price": late_deduction,
+        "net_pay": round(net_pay, 2),
         "break_logs": [
             {
                 "id": br.id,
@@ -103,9 +121,29 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
             }
             for br in attendance.break_logs
         ],
+        "penalty_log": [
+            {
+                "id": p.id,
+                "description": p.description,
+                "price": float(p.price),
+                "created_at": p.created_at
+            }
+            for p in attendance.penalties
+        ],
+        "bonus_log": [
+            {
+                "id": b.id,
+                "description": b.description,
+                "price": float(b.price),
+                "created_at": b.created_at
+            }
+            for b in attendance.bonuses
+        ]
     }
 
     return result
+
+
 
 
 @router.get("/attendance/{employee_id}")
@@ -267,6 +305,8 @@ def clock_in(employee_id: int, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(new_attendance)
 
+        new_attendance.check_if_late(db)
+
         return {"message": "Clock-in successful", "data": new_attendance}
 
     except Exception as e:
@@ -379,6 +419,8 @@ def update_clock_in(request: ClockInRequest, db: Session = Depends(get_db)):
 
         db.commit()
         db.refresh(attendance)
+
+        attendance.check_if_late(db)
 
         return {
             "message": "Clock-in time updated successfully",

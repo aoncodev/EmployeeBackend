@@ -3,6 +3,10 @@ from app.database import init_db  # Import init_db function
 from app.routes.employee import router as employee_router
 from app.routes.attendance import router as attendance_router
 from app.routes.breaks import router as breaks_router
+from app.routes.information import router as restaurant_hours
+from app.routes.bonus import router as bonus
+from app.routes.penalty import router as penalty
+from app.routes.task import router as task
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
@@ -45,3 +49,7 @@ def read_root():
 app.include_router(employee_router)
 app.include_router(attendance_router)
 app.include_router(breaks_router)
+app.include_router(restaurant_hours)
+app.include_router(bonus)
+app.include_router(penalty)
+app.include_router(task)
