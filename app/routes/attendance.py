@@ -86,6 +86,9 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
     total_penalties = sum(float(p.price) for p in attendance.penalties) if attendance.penalties else 0
     total_bonuses = sum(float(b.price) for b in attendance.bonuses) if attendance.bonuses else 0
 
+    # Calculate total late minutes if available
+    total_late_minutes = attendance.late_record.late_minutes if attendance.late_record and hasattr(attendance.late_record, "late_minutes") else 0
+
     # Compute net pay: base wage minus deductions and penalties, plus bonuses
     net_pay = (total_wage - (late_deduction + total_penalties)) + total_bonuses
 
@@ -108,6 +111,7 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
         "total_penalties": total_penalties,
         "total_bonus": total_bonuses,
         "total_late_price": late_deduction,
+        "total_late_minutes": total_late_minutes,  # New field added here
         "net_pay": round(net_pay, 2),
         "break_logs": [
             {
@@ -142,6 +146,7 @@ def get_attendance_by_id(attendance_id: int, db: Session = Depends(get_db)):
     }
 
     return result
+
 
 
 
