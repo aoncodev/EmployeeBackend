@@ -85,7 +85,9 @@ class AttendanceLog(Base):
 
     def check_if_late(self, db: Session):
         """
-        Check if the employee was late based on the restaurant's opening hours and calculate the late duration and deduction.
+        Check if the employee was late based on the restaurant's opening hours.
+        If the employee clocked in later than the opening time, calculate the late duration
+        and deduction. Otherwise, remove any existing late record.
         """
         restaurant_hours = db.query(RestaurantHours).first()
         if restaurant_hours and self.clock_in:
@@ -95,7 +97,7 @@ class AttendanceLog(Base):
             if clock_in_time > opening_time:
                 self.is_late = True
                 late_duration = datetime.combine(datetime.min, clock_in_time) - datetime.combine(datetime.min, opening_time)
-                late_duration_minutes = Decimal(late_duration.total_seconds() / 60)  # Convert seconds to minutes and to Decimal
+                late_duration_minutes = Decimal(late_duration.total_seconds() / 60)  # Convert seconds to minutes
 
                 # Fetch employee's hourly wage
                 employee = self.employee
@@ -104,20 +106,29 @@ class AttendanceLog(Base):
                 # Calculate deduction amount
                 deduction_amount = (hourly_wage / Decimal(60)) * late_duration_minutes
 
-                # Create a new late record
-                late_record = LateRecord(
-                    attendance_id=self.id,
-                    late_duration_minutes=late_duration_minutes,
-                    deduction_amount=deduction_amount
-                )
-                db.add(late_record)
+                if self.late_record:
+                    # Update existing record if present
+                    self.late_record.late_duration_minutes = late_duration_minutes
+                    self.late_record.deduction_amount = deduction_amount
+                else:
+                    # Create a new late record if not present
+                    late_record = LateRecord(
+                        attendance_id=self.id,
+                        late_duration_minutes=late_duration_minutes,
+                        deduction_amount=deduction_amount
+                    )
+                    db.add(late_record)
                 db.commit()
-                db.refresh(late_record)
+                db.refresh(self)
             else:
+                # Employee is on time or early: remove any existing late record
                 self.is_late = False
-
-            db.commit()
-            db.refresh(self)
+                if self.late_record:
+                    db.delete(self.late_record)
+                    db.commit()
+                    self.late_record = None
+                db.commit()
+                db.refresh(self)
 
 
     def calculate_net_pay(self):
