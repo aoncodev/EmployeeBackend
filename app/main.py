@@ -7,6 +7,7 @@ from app.routes.information import router as restaurant_hours
 from app.routes.bonus import router as bonus
 from app.routes.penalty import router as penalty
 from app.routes.task import router as task
+from app.routes.report import router as report
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
@@ -53,3 +54,4 @@ app.include_router(restaurant_hours)
 app.include_router(bonus)
 app.include_router(penalty)
 app.include_router(task)
+app.include_router(report)

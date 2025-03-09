@@ -148,6 +148,7 @@ def update_break_start(
         # Update the total hours if needed
         attendance.update_total_hours(db)
 
+        break_log.recalculate_total_break_time()
         # Commit changes to the database
         db.commit()
 
@@ -216,6 +217,7 @@ def update_break_end(
         attendance.update_total_hours(db)
 
         # Commit changes to the database
+        break_log.recalculate_total_break_time()
         db.commit()
 
         return {
