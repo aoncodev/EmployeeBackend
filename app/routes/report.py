@@ -1,14 +1,11 @@
 # app/routers/report.py
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.task import Task  # adjust import paths as needed
 from app.models.employee import Employee, RoleEnum
-from app.models.attendance import AttendanceLog
+from app.models.attendance import AttendanceLog, LateRecord, Penalty, Bonus
 from app.models.breaks import BreakLog
-from app.models.attendance import LateRecord
-from app.models.attendance import Penalty
-from app.models.attendance import Bonus
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, date, timedelta
@@ -64,7 +61,6 @@ class AttendanceLogOut(BaseModel):
     id: int
     clock_in: datetime
     clock_out: Optional[datetime]
-    total_hours: Optional[float]
     net_pay: Optional[float]
     break_logs: List[BreakLogOut]
     late_record: Optional[LateRecordOut]
@@ -85,15 +81,29 @@ class EmployeeReport(BaseModel):
     class Config:
         orm_mode = True
 
-# --- API Endpoint ---
 @router.get("/report/{employee_id}", response_model=EmployeeReport)
-def get_employee_report(employee_id: int, db: Session = Depends(get_db)):
-    # Calculate current week boundaries (Monday to Sunday)
-    today = date.today()
-    start_of_week = today - timedelta(days=today.weekday())  # Monday
-    end_of_week = start_of_week + timedelta(days=6)  # Sunday
+def get_employee_report(
+    employee_id: int,
+    start_date: Optional[str] = Query(None, description="Week start date in YYYY-MM-DD format"),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate a simplified report for the given employee for a one-week time frame.
+    If 'start_date' is provided, it is used as the Monday of that week.
+    Otherwise, the current week's Monday is used.
+    """
+    # Determine the start of the week
+    if start_date:
+        try:
+            start_of_week = datetime.strptime(start_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+    else:
+        today = date.today()
+        start_of_week = today - timedelta(days=today.weekday())
+    end_of_week = start_of_week + timedelta(days=6)
 
-    # Convert dates to datetime for comparison with AttendanceLog.clock_in
+    # Convert dates to naive datetimes for filtering
     start_datetime = datetime.combine(start_of_week, datetime.min.time())
     end_datetime = datetime.combine(end_of_week, datetime.max.time())
 
@@ -102,7 +112,7 @@ def get_employee_report(employee_id: int, db: Session = Depends(get_db)):
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    # Get tasks for the employee for the current week
+    # Get tasks for the employee for the week
     tasks = (
         db.query(Task)
         .filter(
@@ -113,7 +123,7 @@ def get_employee_report(employee_id: int, db: Session = Depends(get_db)):
         .all()
     )
 
-    # Get attendance logs for the employee for the current week
+    # Get attendance logs for the employee for the week
     attendance_logs = (
         db.query(AttendanceLog)
         .filter(
@@ -126,48 +136,87 @@ def get_employee_report(employee_id: int, db: Session = Depends(get_db)):
 
     attendance_logs_out = []
     for log in attendance_logs:
-        # Calculate net pay if clock_out is set
-        net_pay = log.calculate_net_pay() if log.clock_out else None
+        # Calculate work hours and wages if clock_in exists
+        if log.clock_in:
+            clock_in = log.clock_in
+            clock_out = log.clock_out or datetime.now()  # use current time if clock_out is missing
+            total_work_hours = (clock_out - clock_in).total_seconds() / 3600
+            total_break_time = sum(
+                (br.break_end - br.break_start).total_seconds() / 3600
+                for br in log.break_logs
+                if br.break_start and br.break_end
+            )
+            effective_hours = max(0, total_work_hours - total_break_time)
+            hourly_wage = float(emp.hourly_wage) if emp.hourly_wage else 0
+            total_wage = effective_hours * hourly_wage
+        else:
+            total_work_hours = 0
+            total_break_time = 0
+            effective_hours = 0
+            total_wage = 0
+
+        late_deduction = float(log.late_record.deduction_amount) if log.late_record else 0
+        total_penalties = sum(float(p.price) for p in log.penalties) if log.penalties else 0
+        total_bonuses = sum(float(b.price) for b in log.bonuses) if log.bonuses else 0
+
+        net_pay = (total_wage - (late_deduction + total_penalties)) + total_bonuses
 
         log_data = {
             "id": log.id,
             "clock_in": log.clock_in,
             "clock_out": log.clock_out,
-            "total_hours": float(log.total_hours) if log.total_hours is not None else None,
-            "net_pay": net_pay,
+            "net_pay": round(net_pay, 0),  # rounded to 0 decimals (KRW)
             "break_logs": [
                 {
-                    "id": b.id,
-                    "break_type": b.break_type,
-                    "break_start": b.break_start,
-                    "break_end": b.break_end,
-                    "total_break_time": float(b.total_break_time) if b.total_break_time is not None else None,
+                    "id": br.id,
+                    "break_type": br.break_type,
+                    "break_start": br.break_start,
+                    "break_end": br.break_end,
+                    "total_break_time": round(
+                        ((br.break_end - br.break_start).total_seconds() / 3600), 2
+                    ) if br.break_start and br.break_end else None,
                 }
-                for b in log.break_logs
+                for br in log.break_logs
             ],
             "late_record": {
                 "id": log.late_record.id,
-                "late_duration_minutes": float(log.late_record.late_duration_minutes),
-                "deduction_amount": float(log.late_record.deduction_amount),
+                "late_duration_minutes": int(round(float(log.late_record.late_duration_minutes))),
+                "deduction_amount": round(float(log.late_record.deduction_amount), 0),
             } if log.late_record else None,
             "penalties": [
-                {"id": p.id, "description": p.description, "price": float(p.price)}
+                {
+                    "id": p.id,
+                    "description": p.description,
+                    "price": round(float(p.price), 0),
+                }
                 for p in log.penalties
             ],
             "bonuses": [
-                {"id": b.id, "description": b.description, "price": float(b.price)}
+                {
+                    "id": b.id,
+                    "description": b.description,
+                    "price": round(float(b.price), 0),
+                }
                 for b in log.bonuses
             ],
         }
         attendance_logs_out.append(log_data)
 
-    # Build the report data
     report = {
         "id": emp.id,
         "name": emp.name,
-        "role": emp.role.value if isinstance(emp.role, RoleEnum) else emp.role,
-        "hourly_wage": float(emp.hourly_wage),
-        "tasks": tasks,
+        "role": emp.role.value if hasattr(emp.role, "value") else emp.role,
+        "hourly_wage": round(float(emp.hourly_wage), 0),
+        "tasks": [
+            {
+                "id": t.id,
+                "description": t.description,
+                "task_date": t.task_date,
+                "status": t.status,
+                "completed_at": t.completed_at,
+            }
+            for t in tasks
+        ],
         "attendance_logs": attendance_logs_out,
     }
     return report
