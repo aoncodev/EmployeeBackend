@@ -4,7 +4,12 @@ from sqlalchemy.orm import sessionmaker
 
 SQLALCHEMY_DATABASE_URL = 'postgresql://aon:ahid1997@13.125.250.152:5432/manager'
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    pool_pre_ping=True,      # catch & reconnect dead TCP sockets
+    pool_recycle=1800,       # recycle connections older than 30 min
+    echo_pool="debug")
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
